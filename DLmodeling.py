@@ -82,7 +82,7 @@ class SegRNNLSTM(nn.Module):
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
 
-        lstm = nn.LSTM(
+        self.lstm = nn.LSTM(
             input_size=self.d_model,
             hidden_size=self.d_model, 
             num_layers=1, 
@@ -110,7 +110,7 @@ class SegRNNLSTM(nn.Module):
         xd = self.linear_patch(xw)  # B * C, N, W -> B * C, N, d
         enc_in = self.relu(xd)
 
-        _, (enc_out_h, enc_out_c) = lstm(enc_in)
+        _, (enc_out_h, enc_out_c) = self.lstm(enc_in)
         enc_out_h = enc_out_h.repeat(1, 1, M).view(1, -1, d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
         enc_out_c = enc_out_c.repeat(1, 1, M).view(1, -1, d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
 
