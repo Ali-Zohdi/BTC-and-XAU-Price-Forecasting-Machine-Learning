@@ -130,9 +130,9 @@ class SegRNNLSTM(nn.Module):
         return y
     
 
-class SegRNNBase(nn.Module):
+class SegRNNBasic(nn.Module):
     def __init__(self, configs):
-        super(SegRNNBase, self).__init__()
+        super(SegRNNBasic, self).__init__()
 
         # remove this, the performance will be bad
         self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
