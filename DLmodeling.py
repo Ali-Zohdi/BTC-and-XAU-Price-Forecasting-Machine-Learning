@@ -32,6 +32,7 @@ class SegRNNGRU(nn.Module):
 
         self.dropout = nn.Dropout(configs.dropout)
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
+        self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
     def forward(self, x, x_mark, y_true, y_mark):
         # seq_last = x[:, -1:, :].detach()
@@ -61,6 +62,7 @@ class SegRNNGRU(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
+        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
 
         # y = y + seq_last
 
@@ -186,6 +188,7 @@ class SegRNNLSTM(nn.Module):
 
         self.dropout = nn.Dropout(configs.dropout)
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
+        self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
     def forward(self, x, x_mark, y_true, y_mark):
         # seq_last = x[:, -1:, :].detach()
@@ -217,7 +220,8 @@ class SegRNNLSTM(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
-
+        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        
         # y = y + seq_last
 
         return y
@@ -344,6 +348,7 @@ class SegRNNBasic(nn.Module):
 
         self.dropout = nn.Dropout(configs.dropout)
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
+        self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
     def forward(self, x, x_mark, y_true, y_mark):
         # seq_last = x[:, -1:, :].detach()
@@ -373,6 +378,7 @@ class SegRNNBasic(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
+        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
 
         # y = y + seq_last
 
@@ -403,7 +409,8 @@ class CNNSegRNNBasic(nn.Module):
         self.bn1 = nn.BatchNorm1d(self.out_channel)
         self.pool = nn.MaxPool1d(self.pooling_size)
 
-        self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1
+        self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1 # if you are changing CNN config(padding, stride), this must change too
+         
         self.linear_patch_cnn = nn.Linear(
             self.out_channel * self.Lcnn // self.pooling_size,
             self.seq_len
