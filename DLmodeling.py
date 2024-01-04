@@ -19,7 +19,14 @@ class SegRNNGRU(nn.Module):
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
 
-        self.gru = nn.GRU(
+        self.gru_enc = nn.GRU(
+            input_size=self.d_model,
+            hidden_size=self.d_model,
+            num_layers=1,
+            bias=True,
+            batch_first=True,
+        )
+        self.gru_dec = nn.GRU(
             input_size=self.d_model,
             hidden_size=self.d_model,
             num_layers=1,
@@ -49,7 +56,7 @@ class SegRNNGRU(nn.Module):
         xd = self.linear_patch(xw)  # B * C, N, W -> B * C, N, d
         enc_in = self.relu(xd)
 
-        enc_out = self.gru(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
+        enc_out = self.gru_enc(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
 
         #### DECODING ####
         dec_in = torch.cat([
@@ -57,7 +64,7 @@ class SegRNNGRU(nn.Module):
             self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//2 -> C, 1, d//2 -> B * C, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d
 
-        dec_out = self.gru(dec_in, enc_out)[0]  # B * C * M, 1, d
+        dec_out = self.gru_dec(dec_in, enc_out)[0]  # B * C * M, 1, d
 
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
@@ -102,7 +109,14 @@ class CNNSegRNNGRU(nn.Module):
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
 
-        self.gru = nn.GRU(
+        self.gru_enc = nn.GRU(
+            input_size=self.d_model,
+            hidden_size=self.d_model,
+            num_layers=1,
+            bias=True,
+            batch_first=True,
+        )
+        self.gru_dec = nn.GRU(
             input_size=self.d_model,
             hidden_size=self.d_model,
             num_layers=1,
@@ -140,7 +154,7 @@ class CNNSegRNNGRU(nn.Module):
         seg_d = self.linear_patch(seg_w)  # B, N, W -> B, N, d
         enc_in = self.relu(seg_d)
 
-        enc_out = self.gru(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B, d -> 1, B, M * d -> 1, B * M, d
+        enc_out = self.gru_enc(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B, d -> 1, B, M * d -> 1, B * M, d
 
         #### DECONDING ####
         dec_in = torch.cat([
@@ -148,7 +162,7 @@ class CNNSegRNNGRU(nn.Module):
             self.channel_emb.unsqueeze(1).repeat(B, M, 1) # 1, d//2 -> 1, 1, d//2 -> B, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B, M, d -> B * M, d -> B * M, 1, d
 
-        dec_out = self.gru(dec_in, enc_out)[0]  # B * M, 1, d
+        dec_out = self.gru_dec(dec_in, enc_out)[0]  # B * M, 1, d
 
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
@@ -175,7 +189,14 @@ class SegRNNLSTM(nn.Module):
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
 
-        self.lstm = nn.LSTM(
+        self.lstm_enc = nn.LSTM(
+            input_size=self.d_model,
+            hidden_size=self.d_model, 
+            num_layers=1, 
+            bias=True, 
+            batch_first=True
+            )
+        self.lstm_dec = nn.LSTM(
             input_size=self.d_model,
             hidden_size=self.d_model, 
             num_layers=1, 
@@ -205,7 +226,7 @@ class SegRNNLSTM(nn.Module):
         xd = self.linear_patch(xw)  # B * C, N, W -> B * C, N, d
         enc_in = self.relu(xd)
 
-        _, (enc_out_h, enc_out_c) = self.lstm(enc_in)
+        _, (enc_out_h, enc_out_c) = self.lstm_enc(enc_in)
         enc_out_h = enc_out_h.repeat(1, 1, M).view(1, -1, self.d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
         enc_out_c = enc_out_c.repeat(1, 1, M).view(1, -1, self.d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
 
@@ -215,7 +236,7 @@ class SegRNNLSTM(nn.Module):
             self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//2 -> C, 1, d//2 -> B * C, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d
 
-        dec_out = self.lstm(dec_in, (enc_out_h, enc_out_c))[0]  # B * C * M, 1, d
+        dec_out = self.lstm_dec(dec_in, (enc_out_h, enc_out_c))[0]  # B * C * M, 1, d
 
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
@@ -260,7 +281,14 @@ class CNNSegRNNLSTM(nn.Module):
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
 
-        self.lstm = nn.LSTM(
+        self.lstm_enc = nn.LSTM(
+            input_size=self.d_model,
+            hidden_size=self.d_model, 
+            num_layers=1, 
+            bias=True, 
+            batch_first=True
+            )
+        self.lstm_dec = nn.LSTM(
             input_size=self.d_model,
             hidden_size=self.d_model, 
             num_layers=1, 
@@ -298,7 +326,7 @@ class CNNSegRNNLSTM(nn.Module):
         seg_d = self.linear_patch(seg_w)  # B, N, W -> B, N, d
         enc_in = self.relu(seg_d)
 
-        _, (enc_out_h, enc_out_c) = self.lstm(enc_in)
+        _, (enc_out_h, enc_out_c) = self.lstm_enc(enc_in)
         enc_out_h = enc_out_h.repeat(1, 1, M).view(1, -1, self.d_model) # 1, B, d -> 1, B, M * d -> 1, B * M, d
         enc_out_c = enc_out_c.repeat(1, 1, M).view(1, -1, self.d_model) # 1, B, d -> 1, B, M * d -> 1, B * M, d
 
@@ -307,7 +335,7 @@ class CNNSegRNNLSTM(nn.Module):
             self.channel_emb.unsqueeze(1).repeat(B, M, 1) # 1, d//2 -> 1, 1, d//2 -> B, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B, M, d -> B * M, d -> B * M, 1, d
 
-        dec_out = self.lstm(dec_in, (enc_out_h, enc_out_c))[0]  # B * M, 1, d
+        dec_out = self.lstm_dec(dec_in, (enc_out_h, enc_out_c))[0]  # B * M, 1, d
 
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
@@ -334,7 +362,15 @@ class SegRNNBasic(nn.Module):
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
 
-        self.rnn = nn.RNN(
+        self.rnn_enc = nn.RNN(
+            input_size=self.d_model, 
+            hidden_size=self.d_model, 
+            num_layers=1, 
+            nonlinearity='tanh', 
+            bias=True, 
+            batch_first=True
+            )
+        self.rnn_dec = nn.RNN(
             input_size=self.d_model, 
             hidden_size=self.d_model, 
             num_layers=1, 
@@ -365,7 +401,7 @@ class SegRNNBasic(nn.Module):
         xd = self.linear_patch(xw)  # B * C, N, W -> B * C, N, d
         enc_in = self.relu(xd)
 
-        enc_out = self.rnn(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
+        enc_out = self.rnn_enc(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B * C, d -> 1, B * C, M * d -> 1, B * C * M, d
 
         #### DECODING ####
         dec_in = torch.cat([
@@ -373,7 +409,7 @@ class SegRNNBasic(nn.Module):
             self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//2 -> C, 1, d//2 -> B * C, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d
 
-        dec_out = self.rnn(dec_in, enc_out)[0]  # B * C * M, 1, d
+        dec_out = self.rnn)dec(dec_in, enc_out)[0]  # B * C * M, 1, d
 
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
@@ -419,7 +455,15 @@ class CNNSegRNNBasic(nn.Module):
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
 
-        self.rnn = nn.RNN(
+        self.rnn_enc = nn.RNN(
+            input_size=self.d_model, 
+            hidden_size=self.d_model, 
+            num_layers=1, 
+            nonlinearity='tanh', 
+            bias=True, 
+            batch_first=True
+            )
+        self.rnn_dec = nn.RNN(
             input_size=self.d_model, 
             hidden_size=self.d_model, 
             num_layers=1, 
@@ -458,7 +502,7 @@ class CNNSegRNNBasic(nn.Module):
         seg_d = self.linear_patch(seg_w)  # B, N, W -> B, N, d
         enc_in = self.relu(seg_d)
 
-        enc_out = self.rnn(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B, d -> 1, B, M * d -> 1, B * M, d
+        enc_out = self.rnn_enc(enc_in)[1].repeat(1, 1, M).view(1, -1, self.d_model) # 1, B, d -> 1, B, M * d -> 1, B * M, d
 
         #### DECONDING ####
         dec_in = torch.cat([
@@ -466,7 +510,7 @@ class CNNSegRNNBasic(nn.Module):
             self.channel_emb.unsqueeze(1).repeat(B, M, 1) # 1, d//2 -> 1, 1, d//2 -> B, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B, M, d -> B * M, d -> B * M, 1, d
 
-        dec_out = self.rnn(dec_in, enc_out)[0]  # B * M, 1, d
+        dec_out = self.rnn_dec(dec_in, enc_out)[0]  # B * M, 1, d
 
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
