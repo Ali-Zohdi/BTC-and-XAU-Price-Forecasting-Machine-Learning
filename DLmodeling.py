@@ -2,18 +2,18 @@ import torch
 import torch.nn as nn
 import math
 
-class SegRNNGRU(nn.Module):
+class SegGRU(nn.Module):
     def __init__(self, configs):
-        super(SegRNNGRU, self).__init__()
+        super(SegGRU, self).__init__()
 
         # remove this, the performance will be bad
-        self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.enc_in = configs.enc_in
-        self.patch_len = configs.patch_len
-        self.d_model = configs.d_model
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.enc_in = configs['enc_in']
+        self.patch_len = configs['patch_len']
+        self.d_model = configs['d_model']
 
 
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
@@ -37,11 +37,11 @@ class SegRNNGRU(nn.Module):
         self.pos_emb = nn.Parameter(torch.randn(self.pred_len // self.patch_len, self.d_model // 2))
         self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 2))
 
-        self.dropout = nn.Dropout(configs.dropout)
+        self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
         self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
-    def forward(self, x, x_mark, y_true, y_mark):
+    def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
 
@@ -70,41 +70,66 @@ class SegRNNGRU(nn.Module):
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
         y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        y = self.relu(y)
 
         # y = y + seq_last
 
         return y
 
-class CNNSegRNNGRU(nn.Module):
+class CNNSegGRU(nn.Module):
     def __init__(self, configs):
-        super(CNNSegRNNGRU, self).__init__()
+        super(CNNSegGRU, self).__init__()
 
         # remove this, the performance will be bad
-        self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.enc_in = configs.enc_in
-        self.patch_len = configs.patch_len
-        self.d_model = configs.d_model
-        self.out_channel = configs.out_channel
-        self.cnn_kernel = configs.cnn_kernel
-        self.pooling_size = configs.pooling_size
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.week_t = configs['week_t']
+        self.enc_in = configs['enc_in']
+        self.patch_len = configs['patch_len']
+        self.d_model = configs['d_model']
+        self.out_channel = configs['out_channel']
+        self.cnn_kernel = configs['cnn_kernel']
+        self.pooling_size = configs['pooling_size']
 
-        self.conv1 = nn.Conv1d(
-            in_channels=self.enc_in,
-            out_channels=self.out_channel,
-            kernel_size=self.cnn_kernel
+        self.conv = configs['conv']
+
+        if self.conv == 1:
+            self.conv1 = nn.Conv1d(
+                in_channels=self.enc_in,
+                out_channels=self.out_channel,
+                kernel_size=self.cnn_kernel
+                )
+            
+            self.bn1 = nn.BatchNorm1d(self.out_channel)
+            self.pool = nn.MaxPool1d(self.pooling_size)
+
+            self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1
+            self.linear_patch_cnn = nn.Linear(
+                self.out_channel * (self.Lcnn // self.pooling_size),
+                self.seq_len
             )
-        
-        self.bn1 = nn.BatchNorm1d(self.out_channel)
-        self.pool = nn.MaxPool1d(self.pooling_size)
 
-        self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1
-        self.linear_patch_cnn = nn.Linear(
-            self.out_channel * self.Lcnn // self.pooling_size,
-            self.seq_len
-        )
+        if self.conv == 2:
+            self.conv2 = nn.Conv2d(
+                in_channels=self.enc_in,
+                out_channels=self.out_channel,
+                kernel_size=self.cnn_kernel
+                )
+
+            self.bn1 = nn.BatchNorm1d(self.out_channel)
+            self.pool = nn.MaxPool1d(self.pooling_size)
+
+            self.Tcnn = ((self.week_t + 2*0 - 1*(self.cnn_kernel[0] - 1) - 1)//1) + 1
+            self.Lcnn = ((self.pred_len + 2*0 - 1*(self.cnn_kernel[1] - 1) - 1)//1) + 1
+
+            self.flatten = nn.Flatten()
+
+            self.linear_patch_cnn = nn.Linear(
+                self.out_channel * (self.Tcnn * self.Lcnn // self.pooling_size),
+                self.seq_len
+            )            
 
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
@@ -130,7 +155,7 @@ class CNNSegRNNGRU(nn.Module):
         self.dropout = nn.Dropout(configs.dropout)
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
-    def forward(self, x, x_mark, y_true, y_mark):
+    def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
 
@@ -141,13 +166,20 @@ class CNNSegRNNGRU(nn.Module):
         d = self.d_model
         O = self.out_channel
      # L' = self.Lcnn
+     # T' = self.Tcnn
         p = self.pooling_size
 
         #### CNN ####
-        x = self.conv1(x.permute(0, 2, 1)) # B, L, C -> B, C, L -> B, O, L'
-        x = self.pool(self.bn1(x).relu()) # B, O, L' -> B, O, L'//p
-        x = x.view(B, -1) # B, O, L'//p -> B, O * L'//p
-        cnn_out = self.linear_patch_cnn(x) # B, O * L'//p -> B, L
+        if self.conv == 1:
+            x = self.conv1(x.permute(0, 2, 1)) # B, L, C -> B, C, L -> B, O, L'
+            x = self.pool(self.bn1(x).relu()) # B, O, L' -> B, O, L'//p
+            x = x.view(B, -1) # B, O, L'//p -> B, O * L'//p
+            cnn_out = self.linear_patch_cnn(x) # B, O * L'//p -> B, L
+
+        if self.conv == 2:
+            x = self.conv2(x.permute(0, 3, 1, 2)) # B, T, L, C -> B, C, T, L -> B, O, T', L'
+            x = self.pool(self.bn1(x.view(B, O, -1)).relu()) # B, O, T', L' -> B, O, T'*L' -> B, O, T'*L'//p
+            cnn_out = self.linear_patch_cnn(self.flatten(x)) # B, O, T'*L'//p -> B, O * (T'*L'//p) -> B, L            
 
         #### SEGMENT + ENCODING ####
         seg_w = cnn_out.reshape(B, N, -1)  # B, L -> B, N, W
@@ -167,23 +199,24 @@ class CNNSegRNNGRU(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
         y = yw.reshape(B, 1, -1).squeeze(1) # B, 1, H -> B, H
+        y = self.relu(y)
 
         # y = y + seq_last
 
         return y    
 
-class SegRNNLSTM(nn.Module):
+class SegLSTM(nn.Module):
     def __init__(self, configs):
-        super(SegRNNLSTM, self).__init__()
+        super(SegLSTM, self).__init__()
 
         # remove this, the performance will be bad
-        self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.enc_in = configs.enc_in
-        self.patch_len = configs.patch_len
-        self.d_model = configs.d_model
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.enc_in = configs['enc_in']
+        self.patch_len = configs['patch_len']
+        self.d_model = configs['d_model']
 
 
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
@@ -207,11 +240,11 @@ class SegRNNLSTM(nn.Module):
         self.pos_emb = nn.Parameter(torch.randn(self.pred_len // self.patch_len, self.d_model // 2))
         self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 2))
 
-        self.dropout = nn.Dropout(configs.dropout)
+        self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
         self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
-    def forward(self, x, x_mark, y_true, y_mark):
+    def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
 
@@ -242,41 +275,66 @@ class SegRNNLSTM(nn.Module):
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
         y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
-        
+        y = self.relu(y)
+
         # y = y + seq_last
 
         return y
     
-class CNNSegRNNLSTM(nn.Module):
+class CNNSegLSTM(nn.Module):
     def __init__(self, configs):
-        super(CNNSegRNNLSTM, self).__init__()
+        super(CNNSegLSTM, self).__init__()
 
         # remove this, the performance will be bad
-        self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.enc_in = configs.enc_in
-        self.patch_len = configs.patch_len
-        self.d_model = configs.d_model
-        self.out_channel = configs.out_channel
-        self.cnn_kernel = configs.cnn_kernel
-        self.pooling_size = configs.pooling_size
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.week_t = configs['week_t']
+        self.enc_in = configs['enc_in']
+        self.patch_len = configs['patch_len']
+        self.d_model = configs['d_model']
+        self.out_channel = configs['out_channel']
+        self.cnn_kernel = configs['cnn_kernel']
+        self.pooling_size = configs['pooling_size']
 
-        self.conv1 = nn.Conv1d(
-            in_channels=self.enc_in,
-            out_channels=self.out_channel,
-            kernel_size=self.cnn_kernel
+        self.conv = configs['conv']
+
+        if self.conv == 1:
+            self.conv1 = nn.Conv1d(
+                in_channels=self.enc_in,
+                out_channels=self.out_channel,
+                kernel_size=self.cnn_kernel
+                )
+            
+            self.bn1 = nn.BatchNorm1d(self.out_channel)
+            self.pool = nn.MaxPool1d(self.pooling_size)
+
+            self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1
+            self.linear_patch_cnn = nn.Linear(
+                self.out_channel * (self.Lcnn // self.pooling_size),
+                self.seq_len
             )
-        
-        self.bn1 = nn.BatchNorm1d(self.out_channel)
-        self.pool = nn.MaxPool1d(self.pooling_size)
 
-        self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1
-        self.linear_patch_cnn = nn.Linear(
-            self.out_channel * self.Lcnn // self.pooling_size,
-            self.seq_len
-        )
+        if self.conv == 2:
+            self.conv2 = nn.Conv2d(
+                in_channels=self.enc_in,
+                out_channels=self.out_channel,
+                kernel_size=self.cnn_kernel
+                )
+
+            self.bn1 = nn.BatchNorm1d(self.out_channel)
+            self.pool = nn.MaxPool1d(self.pooling_size)
+
+            self.Tcnn = ((self.week_t + 2*0 - 1*(self.cnn_kernel[0] - 1) - 1)//1) + 1
+            self.Lcnn = ((self.pred_len + 2*0 - 1*(self.cnn_kernel[1] - 1) - 1)//1) + 1
+
+            self.flatten = nn.Flatten()
+
+            self.linear_patch_cnn = nn.Linear(
+                self.out_channel * (self.Tcnn * self.Lcnn // self.pooling_size),
+                self.seq_len
+            )
 
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
@@ -299,10 +357,10 @@ class CNNSegRNNLSTM(nn.Module):
         self.pos_emb = nn.Parameter(torch.randn(self.pred_len // self.patch_len, self.d_model // 2))
         self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 2))
 
-        self.dropout = nn.Dropout(configs.dropout)
+        self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
-    def forward(self, x, x_mark, y_true, y_mark):
+    def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
 
@@ -313,13 +371,20 @@ class CNNSegRNNLSTM(nn.Module):
         d = self.d_model
         O = self.out_channel
      # L' = self.Lcnn
+     # T' = self.Tcnn
         p = self.pooling_size
 
         #### CNN ####
-        x = self.conv1(x.permute(0, 2, 1)) # B, L, C -> B, C, L -> B, O, L'
-        x = self.pool(self.bn1(x).relu()) # B, O, L' -> B, O, L'//p
-        x = x.view(B, -1) # B, O, L'//p -> B, O * L'//p
-        cnn_out = self.linear_patch_cnn(x) # B, O * L'//p -> B, L
+        if self.conv == 1:
+            x = self.conv1(x.permute(0, 2, 1)) # B, L, C -> B, C, L -> B, O, L'
+            x = self.pool(self.bn1(x).relu()) # B, O, L' -> B, O, L'//p
+            x = x.view(B, -1) # B, O, L'//p -> B, O * L'//p
+            cnn_out = self.linear_patch_cnn(x) # B, O * L'//p -> B, L
+
+        if self.conv == 2:
+            x = self.conv2(x.permute(0, 3, 1, 2)) # B, T, L, C -> B, C, T, L -> B, O, T', L'
+            x = self.pool(self.bn1(x.view(B, O, -1)).relu()) # B, O, T', L' -> B, O, T'*L' -> B, O, T'*L'//p
+            cnn_out = self.linear_patch_cnn(self.flatten(x)) # B, O, T'*L'//p -> B, O * (T'*L'//p) -> B, L  
 
         #### SEGMENT + ENCODING ####
         seg_w = cnn_out.reshape(B, N, -1)  # B, L -> B, N, W
@@ -340,23 +405,24 @@ class CNNSegRNNLSTM(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
         y = yw.reshape(B, 1, -1).squeeze(1) # B, 1, H -> B, H
+        y = self.relu(y)
 
         # y = y + seq_last
 
         return y
 
-class SegRNNBasic(nn.Module):
+class SegRNN(nn.Module):
     def __init__(self, configs):
-        super(SegRNNBasic, self).__init__()
+        super(SegRNN, self).__init__()
 
         # remove this, the performance will be bad
-        self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.enc_in = configs.enc_in
-        self.patch_len = configs.patch_len
-        self.d_model = configs.d_model
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.enc_in = configs['enc_in']
+        self.patch_len = configs['patch_len']
+        self.d_model = configs['d_model']
 
 
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
@@ -382,11 +448,11 @@ class SegRNNBasic(nn.Module):
         self.pos_emb = nn.Parameter(torch.randn(self.pred_len // self.patch_len, self.d_model // 2))
         self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 2))
 
-        self.dropout = nn.Dropout(configs.dropout)
+        self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
         self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
-    def forward(self, x, x_mark, y_true, y_mark):
+    def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
 
@@ -409,48 +475,72 @@ class SegRNNBasic(nn.Module):
             self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//2 -> C, 1, d//2 -> B * C, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d
 
-        dec_out = self.rnn)dec(dec_in, enc_out)[0]  # B * C * M, 1, d
+        dec_out = self.rnn_dec(dec_in, enc_out)[0]  # B * C * M, 1, d
 
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
         y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        y = self.relu(y)
 
         # y = y + seq_last
 
         return y
     
-class CNNSegRNNBasic(nn.Module):
+class CNNSegRNN(nn.Module):
     def __init__(self, configs):
-        super(CNNSegRNNBasic, self).__init__()
+        super(CNNSegRNN, self).__init__()
 
         # remove this, the performance will be bad
-        self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.enc_in = configs.enc_in
-        self.patch_len = configs.patch_len
-        self.d_model = configs.d_model
-        self.out_channel = configs.out_channel
-        self.cnn_kernel = configs.cnn_kernel
-        self.pooling_size = configs.pooling_size
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.week_t = configs['week_t']
+        self.enc_in = configs['enc_in']
+        self.patch_len = configs['patch_len']
+        self.d_model = configs['d_model']
+        self.out_channel = configs['out_channel']
+        self.cnn_kernel = configs['cnn_kernel']
+        self.pooling_size = configs['pooling_size']
 
-        self.conv1 = nn.Conv1d(
-            in_channels=self.enc_in,
-            out_channels=self.out_channel,
-            kernel_size=self.cnn_kernel
+        self.conv = configs['conv']
+
+        if self.conv == 1:
+            self.conv1 = nn.Conv1d(
+                in_channels=self.enc_in,
+                out_channels=self.out_channel,
+                kernel_size=self.cnn_kernel
+                )
+            
+            self.bn1 = nn.BatchNorm1d(self.out_channel)
+            self.pool = nn.MaxPool1d(self.pooling_size)
+
+            self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1
+            self.linear_patch_cnn = nn.Linear(
+                self.out_channel * (self.Lcnn // self.pooling_size),
+                self.seq_len
             )
-        
-        self.bn1 = nn.BatchNorm1d(self.out_channel)
-        self.pool = nn.MaxPool1d(self.pooling_size)
 
-        self.Lcnn = ((self.seq_len + 2*0 - 1*(self.cnn_kernel - 1) - 1)//1) + 1 # if you are changing CNN config(padding, stride), this must change too
-         
-        self.linear_patch_cnn = nn.Linear(
-            self.out_channel * self.Lcnn // self.pooling_size,
-            self.seq_len
-        )
+        if self.conv == 2:
+            self.conv2 = nn.Conv2d(
+                in_channels=self.enc_in,
+                out_channels=self.out_channel,
+                kernel_size=self.cnn_kernel
+                )
+
+            self.bn1 = nn.BatchNorm1d(self.out_channel)
+            self.pool = nn.MaxPool1d(self.pooling_size)
+
+            self.Tcnn = ((self.week_t + 2*0 - 1*(self.cnn_kernel[0] - 1) - 1)//1) + 1
+            self.Lcnn = ((self.pred_len + 2*0 - 1*(self.cnn_kernel[1] - 1) - 1)//1) + 1
+
+            self.flatten = nn.Flatten()
+
+            self.linear_patch_cnn = nn.Linear(
+                self.out_channel * (self.Tcnn * self.Lcnn // self.pooling_size),
+                self.seq_len
+            )
 
         self.linear_patch = nn.Linear(self.patch_len, self.d_model)
         self.relu = nn.ReLU()
@@ -475,10 +565,10 @@ class CNNSegRNNBasic(nn.Module):
         self.pos_emb = nn.Parameter(torch.randn(self.pred_len // self.patch_len, self.d_model // 2))
         self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 2))
 
-        self.dropout = nn.Dropout(configs.dropout)
+        self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
-    def forward(self, x, x_mark, y_true, y_mark):
+    def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
 
@@ -489,13 +579,20 @@ class CNNSegRNNBasic(nn.Module):
         d = self.d_model
         O = self.out_channel
      # L' = self.Lcnn
+     # T' = self.Tcnn
         p = self.pooling_size
 
         #### CNN ####
-        x = self.conv1(x.permute(0, 2, 1)) # B, L, C -> B, C, L -> B, O, L'
-        x = self.pool(self.bn1(x).relu()) # B, O, L' -> B, O, L'//p
-        x = x.view(B, -1) # B, O, L'//p -> B, O * L'//p
-        cnn_out = self.linear_patch_cnn(x) # B, O * L'//p -> B, L
+        if self.conv == 1:
+            x = self.conv1(x.permute(0, 2, 1)) # B, L, C -> B, C, L -> B, O, L'
+            x = self.pool(self.bn1(x).relu()) # B, O, L' -> B, O, L'//p
+            x = x.view(B, -1) # B, O, L'//p -> B, O * L'//p
+            cnn_out = self.linear_patch_cnn(x) # B, O * L'//p -> B, L
+
+        if self.conv == 2:
+            x = self.conv2(x.permute(0, 3, 1, 2)) # B, T, L, C -> B, C, T, L -> B, O, T', L'
+            x = self.pool(self.bn1(x.view(B, O, -1)).relu()) # B, O, T', L' -> B, O, T'*L' -> B, O, T'*L'//p
+            cnn_out = self.linear_patch_cnn(self.flatten(x)) # B, O, T'*L'//p -> B, O * (T'*L'//p) -> B, L 
 
         #### SEGMENT + ENCODING ####
         seg_w = cnn_out.reshape(B, N, -1)  # B, L -> B, N, W
@@ -515,6 +612,7 @@ class CNNSegRNNBasic(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
         y = yw.reshape(B, 1, -1).squeeze(1) # B, 1, H -> B, H
+        y = self.relu(y)
 
         # y = y + seq_last
 
