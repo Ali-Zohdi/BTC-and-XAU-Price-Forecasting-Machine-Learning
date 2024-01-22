@@ -112,6 +112,8 @@ class CNNSegGRU(nn.Module):
             )
 
         if self.conv == 2:
+            self.cnn_kernel = (self.week_t, self.patch_len)
+
             self.conv2 = nn.Conv2d(
                 in_channels=self.enc_in,
                 out_channels=self.out_channel,
@@ -152,14 +154,17 @@ class CNNSegGRU(nn.Module):
         self.pos_emb = nn.Parameter(torch.randn(self.pred_len // self.patch_len, self.d_model // 2))
         self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 2))
 
-        self.dropout = nn.Dropout(configs.dropout)
+        self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
     def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
-
-        B, L, C = x.shape
+        try:
+          B, L, C = x.shape
+        except:
+          B, T, L, C = x.shape
+          
         N = self.seq_len // self.patch_len
         M = self.pred_len // self.patch_len
         W = self.patch_len
@@ -317,6 +322,8 @@ class CNNSegLSTM(nn.Module):
             )
 
         if self.conv == 2:
+            self.cnn_kernel = (self.week_t, self.patch_len)
+            
             self.conv2 = nn.Conv2d(
                 in_channels=self.enc_in,
                 out_channels=self.out_channel,
@@ -363,8 +370,11 @@ class CNNSegLSTM(nn.Module):
     def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
+        try:
+          B, L, C = x.shape
+        except:
+          B, T, L, C = x.shape
 
-        B, L, C = x.shape
         N = self.seq_len // self.patch_len
         M = self.pred_len // self.patch_len
         W = self.patch_len
@@ -523,6 +533,8 @@ class CNNSegRNN(nn.Module):
             )
 
         if self.conv == 2:
+            self.cnn_kernel = (self.week_t, self.patch_len)
+            
             self.conv2 = nn.Conv2d(
                 in_channels=self.enc_in,
                 out_channels=self.out_channel,
@@ -571,8 +583,11 @@ class CNNSegRNN(nn.Module):
     def forward(self, x, x_mark, y_mark):
         # seq_last = x[:, -1:, :].detach()
         # x = x - seq_last
+        try:
+          B, L, C = x.shape
+        except:
+          B, T, L, C = x.shape
 
-        B, L, C = x.shape
         N = self.seq_len // self.patch_len
         M = self.pred_len // self.patch_len
         W = self.patch_len
