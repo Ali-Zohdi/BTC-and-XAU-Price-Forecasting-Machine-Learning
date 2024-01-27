@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import math
 
+######################
+## SEGMENTAL MODELS ##
+######################
+
 class SegGRU(nn.Module):
     def __init__(self, configs):
         super(SegGRU, self).__init__()
@@ -632,3 +636,317 @@ class CNNSegRNN(nn.Module):
         # y = y + seq_last
 
         return y
+    
+#######################
+## SEQUENTIAL MODELS ##
+#######################
+
+class EncoderRNN(nn.Module):
+    def __init__(self, configs):
+        super(EncoderRNN, self).__init__()
+
+        self.enc_in = configs['enc_in']
+        self.d_model = configs['d_model']
+
+        self.rnn = nn.RNN(
+            input_size=self.enc_in,
+            hidden_size=self.d_model,
+            num_layers=1, 
+            nonlinearity='tanh', 
+            bias=True, 
+            batch_first=True
+            )
+
+
+    def forward(self, x):
+
+        B, L, C = x.shape
+        d = self.d_model
+
+        enc_out = self.rnn(x)[1] # B, L, C -> 1, B, d
+
+        return enc_out
+
+
+class DecoderRNN(nn.Module):
+    def __init__(self, configs):
+        super(DecoderRNN, self).__init__()
+
+        self.seq_len = configs['seq_len']
+        self.d_model = configs['d_model']
+        self.de_pred_len = configs['patch_len']
+
+        self.rnn = nn.RNN(
+            input_size=self.seq_len,
+            hidden_size=self.d_model,
+            num_layers=1, 
+            nonlinearity='tanh', 
+            bias=True, 
+            batch_first=True
+            )
+
+
+        self.relu = nn.ReLU()
+        self.linear_patch = nn.Linear(self.d_model, self.de_pred_len)
+
+    def forward(self, input, hidden_state):
+
+        B, L, a = input.shape # a = 1
+        a, B, d = hidden_state.shape # a = 1 as long as RNN layers are 1
+        W = self.de_pred_len
+
+        input = input.permute(0, 2, 1) # B, L, 1 -> B, 1, L
+        dec_out, hid= self.rnn(input, hidden_state) # (B, 1, L)&(1, B, d) -> (B, 1, d)&(1, B, d)
+
+        de_pred = self.linear_patch(dec_out) # B, 1, d -> B, 1, W
+        de_pred = de_pred.view(B, -1) # B, W
+        de_pred = self.relu(de_pred)
+
+        return de_pred, hid
+    
+class Seq2SeqRNN(nn.Module):
+    def __init__(self, configs):
+        super(Seq2SeqRNN, self).__init__()
+
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.patch_len = configs['patch_len']
+
+        self.encoder = EncoderRNN(configs)
+        self.decoder = DecoderRNN(configs)
+
+    def forward(self, x, y, teacher_forcing_ratio):
+
+        B, L, C = x.shape
+        H = self.pred_len
+        W = self.patch_len
+        M = self.pred_len//self.patch_len
+        
+        outputs = torch.zeros(B, H)
+        hidden_state = self.encoder(x) # B, L, C -> 1, B, d
+
+        x_input = x[:, :, :1] # B, L, 1 - choosing the column that we are predicting the value
+
+        for m in range(M):
+
+            output, hidden_state = self.decoder(x_input, hidden_state) # (B, L, 1)&(1, B, d) -> (B, W)&(1, B, d)
+
+            outputs[:, m*self.patch_len:(m+1)*self.patch_len] = output # add the output to the m-th section of the outputs
+
+            if random.random() < teacher_forcing_ratio:
+                appending = y[:, m*self.patch_len:(m+1)*self.patch_len]
+               
+            else:
+                appending = output
+            
+            appending = appending.unsqueeze(2) # B, W -> B, W, 1
+
+            x_input = x_input[:, self.patch_len:, :1] # B, L, 1 -> B, L - W, 1
+
+            x_input = torch.cat((x_input, appending), dim=1) # B, L - W, 1 -> B, L, 1
+
+        return outputs
+
+class EncoderGRU(nn.Module):
+    def __init__(self, configs):
+        super(EncoderGRU, self).__init__()
+
+        self.enc_in = configs['enc_in']
+        self.d_model = configs['d_model']
+
+        self.gru = nn.GRU(
+            input_size=self.enc_in,
+            hidden_size=self.d_model,
+            num_layers=1,
+            bias=True,
+            batch_first=True,
+        )
+
+    def forward(self, x):
+
+        B, L, C = x.shape
+        d = self.d_model
+
+        enc_out = self.gru(x)[1] # B, L, C -> 1, B, d
+
+        return enc_out
+
+
+class DecoderGRU(nn.Module):
+    def __init__(self, configs):
+        super(DecoderGRU, self).__init__()
+
+        self.seq_len = configs['seq_len']
+        self.d_model = configs['d_model']
+        self.de_pred_len = configs['patch_len']
+
+        self.gru = nn.GRU(
+            input_size=self.seq_len,
+            hidden_size=self.d_model,
+            num_layers=1,
+            bias=True,
+            batch_first=True
+        )
+
+        self.relu = nn.ReLU()
+        self.linear_patch = nn.Linear(self.d_model, self.de_pred_len)
+
+    def forward(self, input, hidden_state):
+
+        B, L, a = input.shape # a = 1
+        a, B, d = hidden_state.shape # a = 1 as long as RNN layers are 1
+        W = self.de_pred_len
+
+        input = input.permute(0, 2, 1) # B, L, 1 -> B, 1, L
+        dec_out, hid= self.gru(input, hidden_state) # (B, 1, L)&(1, B, d) -> (B, 1, d)&(1, B, d)
+
+        de_pred = self.linear_patch(dec_out) # B, 1, d -> B, 1, W
+        de_pred = de_pred.view(B, -1) # B, W
+        de_pred = self.relu(de_pred)
+
+        return de_pred, hid
+    
+class Seq2SeqGRU(nn.Module):
+    def __init__(self, configs):
+        super(Seq2SeqGRU, self).__init__()
+
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.patch_len = configs['patch_len']
+
+        self.encoder = EncoderGRU(configs)
+        self.decoder = DecoderGRU(configs)
+
+    def forward(self, x, y, teacher_forcing_ratio):
+
+        B, L, C = x.shape
+        H = self.pred_len
+        W = self.patch_len
+        M = self.pred_len//self.patch_len
+        
+        outputs = torch.zeros(B, H)
+        hidden_state = self.encoder(x) # B, L, C -> 1, B, d
+
+        x_input = x[:, :, :1] # B, L, 1 - choosing the column that we are predicting the value
+
+        for m in range(M):
+
+            output, hidden_state = self.decoder(x_input, hidden_state) # (B, L, 1)&(1, B, d) -> (B, W)&(1, B, d)
+
+            outputs[:, m*self.patch_len:(m+1)*self.patch_len] = output # add the output to the m-th section of the outputs
+
+            if random.random() < teacher_forcing_ratio:
+                appending = y[:, m*self.patch_len:(m+1)*self.patch_len]
+               
+            else:
+                appending = output
+            
+            appending = appending.unsqueeze(2) # B, W -> B, W, 1
+
+            x_input = x_input[:, self.patch_len:, :1] # B, L, 1 -> B, L - W, 1
+
+            x_input = torch.cat((x_input, appending), dim=1) # B, L - W, 1 -> B, L, 1
+
+        return outputs
+    
+class EncoderLSTM(nn.Module):
+    def __init__(self, configs):
+        super(EncoderLSTM, self).__init__()
+
+        self.enc_in = configs['enc_in']
+        self.d_model = configs['d_model']
+
+        self.lstm = nn.LSTM(
+            input_size=self.enc_in,
+            hidden_size=self.d_model,
+            num_layers=1,
+            bias=True,
+            batch_first=True,
+        )
+
+    def forward(self, x):
+
+        B, L, C = x.shape
+        d = self.d_model
+
+        enc_out = self.lstm(x)[1] # B, L, C -> 1, B, d
+
+        return enc_out
+
+
+class DecoderLSTM(nn.Module):
+    def __init__(self, configs):
+        super(DecoderLSTM, self).__init__()
+
+        self.seq_len = configs['seq_len']
+        self.d_model = configs['d_model']
+        self.de_pred_len = configs['patch_len']
+
+        self.lstm = nn.LSTM(
+            input_size=self.seq_len,
+            hidden_size=self.d_model,
+            num_layers=1,
+            bias=True,
+            batch_first=True
+        )
+
+        self.relu = nn.ReLU()
+        self.linear_patch = nn.Linear(self.d_model, self.de_pred_len)
+
+    def forward(self, input, hidden_state):
+
+        B, L, a = input.shape # a = 1
+        a, B, d = hidden_state[0].shape # a = 1 as long as RNN layers are 1
+        W = self.de_pred_len
+
+        input = input.permute(0, 2, 1) # B, L, 1 -> B, 1, L
+        dec_out, hid= self.lstm(input, hidden_state) # (B, 1, L)&(1, B, d) -> (B, 1, d)&(1, B, d)
+
+        de_pred = self.linear_patch(dec_out) # B, 1, d -> B, 1, W
+        de_pred = de_pred.view(B, -1) # B, W
+        de_pred = self.relu(de_pred)
+
+        return de_pred, hid
+    
+class Seq2SeqLSTM(nn.Module):
+    def __init__(self, configs):
+        super(Seq2SeqLSTM, self).__init__()
+
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.patch_len = configs['patch_len']
+
+        self.encoder = EncoderLSTM(configs)
+        self.decoder = DecoderLSTM(configs)
+
+    def forward(self, x, y, teacher_forcing_ratio):
+
+        B, L, C = x.shape
+        H = self.pred_len
+        W = self.patch_len
+        M = self.pred_len//self.patch_len
+        
+        outputs = torch.zeros(B, H)
+        hidden_state = self.encoder(x) # B, L, C -> 1, B, d
+
+        x_input = x[:, :, :1] # B, L, 1 - choosing the column that we are predicting the value
+
+        for m in range(M):
+
+            output, hidden_state = self.decoder(x_input, hidden_state) # (B, L, 1)&(1, B, d) -> (B, W)&(1, B, d)
+
+            outputs[:, m*self.patch_len:(m+1)*self.patch_len] = output # add the output to the m-th section of the outputs
+
+            if random.random() < teacher_forcing_ratio:
+                appending = y[:, m*self.patch_len:(m+1)*self.patch_len]
+               
+            else:
+                appending = output
+            
+            appending = appending.unsqueeze(2) # B, W -> B, W, 1
+
+            x_input = x_input[:, self.patch_len:, :1] # B, L, 1 -> B, L - W, 1
+
+            x_input = torch.cat((x_input, appending), dim=1) # B, L - W, 1 -> B, L, 1
+
+        return outputs
