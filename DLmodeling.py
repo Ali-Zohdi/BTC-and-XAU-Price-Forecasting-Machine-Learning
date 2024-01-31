@@ -1,5 +1,10 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from Transformer_EncDec import Encoder, EncoderLayer
+from SelfAttention_Family import FullAttention, AttentionLayer
+from Embed import DataEmbedding_inverted
+import numpy as np
 import math
 
 ######################
@@ -7,11 +12,10 @@ import math
 ######################
 
 class SegGRU(nn.Module):
-    def __init__(self, configs):
+    def __init__(self, configs, output_channel):
         super(SegGRU, self).__init__()
 
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        self.output_channel = output_channel
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -45,8 +49,6 @@ class SegGRU(nn.Module):
         self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
 
         B, L, C = x.shape
         N = self.seq_len // self.patch_len
@@ -72,19 +74,19 @@ class SegGRU(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
-        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
-        y = self.relu(y)
 
-        # y = y + seq_last
+        if self.output_channel == 'single':
+            y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+
+        y = self.relu(y)
 
         return y
     
 class CustomEmbedingSegGRU(nn.Module):
-    def __init__(self, configs):
+    def __init__(self, configs, output_channel):
         super(CustomEmbedingSegGRU, self).__init__()
 
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        self.output_channel = output_channel
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -110,18 +112,16 @@ class CustomEmbedingSegGRU(nn.Module):
             batch_first=True,
         )
 
-        self.hour_emb = nn.Parameter(torch.randn(24, self.d_model // 4))
-        self.day_emb = nn.Parameter(torch.randn(7, self.d_model // 4))
-        self.month_emb = nn.Parameter(torch.randn(12, self.d_model // 4))
-        self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 4)) 
+        # self.hour_emb = nn.Parameter(torch.randn(24 * (self.pred_len // self.patch_len), self.d_model // 4))
+        # self.day_emb = nn.Parameter(torch.randn(7 * (self.pred_len // self.patch_len), self.d_model // 4))
+        self.month_emb = nn.Parameter(torch.randn(12 * (self.pred_len // self.patch_len), self.d_model // 2))
+        self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 2)) 
 
         self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
         self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
 
         B, L, C = x.shape
         N = self.seq_len // self.patch_len
@@ -138,10 +138,10 @@ class CustomEmbedingSegGRU(nn.Module):
 
         #### DECODING ####
         dec_in = torch.cat([
-            self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//4 -> C, 1, d//4 -> B * C, M, d//4
+            # self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//4 -> 1, M, d//4 -> B * C, M, d//4
+            # self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//4 -> 1, M, d//4 -> B * C, M, d//4
+            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//2 -> 1, M, d//2 -> B * C, M, d//2
+            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//2 -> C, 1, d//2 -> B * C, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d 
 
         dec_out = self.gru_dec(dec_in, enc_out)[0]  # B * C * M, 1, d
@@ -149,19 +149,17 @@ class CustomEmbedingSegGRU(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
-        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
-        y = self.relu(y)
+        
+        if self.output_channel == 'single':
+            y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
 
-        # y = y + seq_last
+        y = self.relu(y)
 
         return y
 
 class CNNSegGRU(nn.Module):
     def __init__(self, configs):
         super(CNNSegGRU, self).__init__()
-
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -238,8 +236,7 @@ class CNNSegGRU(nn.Module):
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
+
         try:
           B, L, C = x.shape
         except:
@@ -286,16 +283,11 @@ class CNNSegGRU(nn.Module):
         y = yw.reshape(B, 1, -1).squeeze(1) # B, 1, H -> B, H
         y = self.relu(y)
 
-        # y = y + seq_last
-
         return y    
 
 class CustomEmbedingCNNSegGRU(nn.Module):
     def __init__(self, configs):
         super(CustomEmbedingCNNSegGRU, self).__init__()
-
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -365,10 +357,10 @@ class CustomEmbedingCNNSegGRU(nn.Module):
             batch_first=True,
         )
 
-        self.hour_emb = nn.Parameter(torch.randn(24, self.d_model // 4))
-        self.day_emb = nn.Parameter(torch.randn(7, self.d_model // 4))
-        self.month_emb = nn.Parameter(torch.randn(12, self.d_model // 4))
-        self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 4))
+        # self.hour_emb = nn.Parameter(torch.randn(24 * (self.pred_len // self.patch_len), self.d_model // 4))
+        # self.day_emb = nn.Parameter(torch.randn(7 * (self.pred_len // self.patch_len), self.d_model // 4))
+        self.month_emb = nn.Parameter(torch.randn(12 * (self.pred_len // self.patch_len), self.d_model // 2))
+        self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 2))
 
         self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
@@ -411,10 +403,10 @@ class CustomEmbedingCNNSegGRU(nn.Module):
 
         #### DECONDING ####
         dec_in = torch.cat([
-            self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B, M, 1), # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
-            self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B, M, 1), # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
-            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B, M, 1), # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
-            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
+            # self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B, 1, 1), # M, d//4 -> 1, M, d//4 -> B, M, d//4
+            # self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B, 1, 1), # M, d//4 -> 1, M, d//4 -> B, M, d//4
+            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B, 1, 1), # M, d//2 -> 1, M, d//2 -> B, M, d//2
+            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # 1, d//2 -> 1, 1, d//2 -> B, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d 
 
         dec_out = self.gru_dec(dec_in, enc_out)[0]  # B * M, 1, d
@@ -429,11 +421,10 @@ class CustomEmbedingCNNSegGRU(nn.Module):
         return y
     
 class SegLSTM(nn.Module):
-    def __init__(self, configs):
+    def __init__(self, configs, output_channel):
         super(SegLSTM, self).__init__()
 
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        self.output_channel = output_channel
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -496,19 +487,19 @@ class SegLSTM(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
-        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        
+        if self.output_channel == 'single':
+            y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        
         y = self.relu(y)
-
-        # y = y + seq_last
 
         return y
     
 class CustomEmbedingSegLSTM(nn.Module):
-    def __init__(self, configs):
+    def __init__(self, configs, output_channel):
         super(CustomEmbedingSegLSTM, self).__init__()
 
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        self.output_channel = output_channel
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -534,18 +525,16 @@ class CustomEmbedingSegLSTM(nn.Module):
             batch_first=True
             )
 
-        self.hour_emb = nn.Parameter(torch.randn(24, self.d_model // 4))
-        self.day_emb = nn.Parameter(torch.randn(7, self.d_model // 4))
-        self.month_emb = nn.Parameter(torch.randn(12, self.d_model // 4))
-        self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 4)) 
+        # self.hour_emb = nn.Parameter(torch.randn(24 * (self.pred_len // self.patch_len), self.d_model // 4))
+        # self.day_emb = nn.Parameter(torch.randn(7 * (self.pred_len // self.patch_len), self.d_model // 4))
+        self.month_emb = nn.Parameter(torch.randn(12 * (self.pred_len // self.patch_len), self.d_model // 2))
+        self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 2)) 
 
         self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
         self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
 
         B, L, C = x.shape
         N = self.seq_len // self.patch_len
@@ -564,10 +553,10 @@ class CustomEmbedingSegLSTM(nn.Module):
 
         #### DECODING ####
         dec_in = torch.cat([
-            self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//4 -> C, 1, d//4 -> B * C, M, d//4
+            # self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//4 -> 1, M, d//4 -> B * C, M, d//4
+            # self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//4 -> 1, M, d//4 -> B * C, M, d//4
+            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//2 -> 1, M, d//2 -> B * C, M, d//2
+            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//2 -> C, 1, d//2 -> B * C, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d 
 
         dec_out = self.lstm_dec(dec_in, (enc_out_h, enc_out_c))[0]  # B * C * M, 1, d
@@ -575,19 +564,17 @@ class CustomEmbedingSegLSTM(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
-        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        
+        if self.output_channel == 'single':
+            y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        
         y = self.relu(y)
-
-        # y = y + seq_last
 
         return y
     
 class CNNSegLSTM(nn.Module):
     def __init__(self, configs):
         super(CNNSegLSTM, self).__init__()
-
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -664,8 +651,7 @@ class CNNSegLSTM(nn.Module):
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
+
         try:
           B, L, C = x.shape
         except:
@@ -714,16 +700,11 @@ class CNNSegLSTM(nn.Module):
         y = yw.reshape(B, 1, -1).squeeze(1) # B, 1, H -> B, H
         y = self.relu(y)
 
-        # y = y + seq_last
-
         return y
     
 class CustomEmbedingCNNSegLSTM(nn.Module):
     def __init__(self, configs):
         super(CustomEmbedingCNNSegLSTM, self).__init__()
-
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -793,17 +774,16 @@ class CustomEmbedingCNNSegLSTM(nn.Module):
             batch_first=True
             )
 
-        self.hour_emb = nn.Parameter(torch.randn(24, self.d_model // 4))
-        self.day_emb = nn.Parameter(torch.randn(7, self.d_model // 4))
-        self.month_emb = nn.Parameter(torch.randn(12, self.d_model // 4))
-        self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 4)) 
+        # self.hour_emb = nn.Parameter(torch.randn(24 * (self.pred_len // self.patch_len), self.d_model // 2))
+        # self.day_emb = nn.Parameter(torch.randn(7 * (self.pred_len // self.patch_len), self.d_model // 2))
+        self.month_emb = nn.Parameter(torch.randn(12 * (self.pred_len // self.patch_len), self.d_model // 2))
+        self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 2)) 
 
         self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
+        
         try:
           B, L, C = x.shape
         except:
@@ -853,17 +833,13 @@ class CustomEmbedingCNNSegLSTM(nn.Module):
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
         y = yw.reshape(B, 1, -1).squeeze(1) # B, 1, H -> B, H
         y = self.relu(y)
-
-        # y = y + seq_last
-
         return y
 
 class SegRNN(nn.Module):
-    def __init__(self, configs):
+    def __init__(self, configs, output_channel):
         super(SegRNN, self).__init__()
 
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
+        self.output_channel = output_channel
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -899,8 +875,6 @@ class SegRNN(nn.Module):
         self.linear_patch_dr = nn.Linear(self.enc_in, 1)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
 
         B, L, C = x.shape
         N = self.seq_len // self.patch_len
@@ -926,16 +900,19 @@ class SegRNN(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
-        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+        
+        if self.output_channel == 'single':
+            y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+    
         y = self.relu(y)
-
-        # y = y + seq_last
 
         return y
     
 class CustomEmbedingSegRNN(nn.Module):
-    def __init__(self, configs):
+    def __init__(self, configs, output_channel):
         super(CustomEmbedingSegRNN, self).__init__()
+
+        self.output_channel = output_channel
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -963,10 +940,10 @@ class CustomEmbedingSegRNN(nn.Module):
             batch_first=True
             )
 
-        self.hour_emb = nn.Parameter(torch.randn(24, self.d_model // 4))
-        self.day_emb = nn.Parameter(torch.randn(7, self.d_model // 4))
-        self.month_emb = nn.Parameter(torch.randn(12, self.d_model // 4))
-        self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 4))                
+        # self.hour_emb = nn.Parameter(torch.randn(24 * (self.pred_len // self.patch_len), self.d_model // 4))
+        # self.day_emb = nn.Parameter(torch.randn(7 * (self.pred_len // self.patch_len), self.d_model // 4))
+        self.month_emb = nn.Parameter(torch.randn(12 * (self.pred_len // self.patch_len), self.d_model // 2))
+        self.channel_emb = nn.Parameter(torch.randn(self.enc_in, self.d_model // 2))                
 
         self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
@@ -989,10 +966,10 @@ class CustomEmbedingSegRNN(nn.Module):
 
         #### DECODING ####
         dec_in = torch.cat([
-            self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, M, 1), # 1, d//4 -> 1, 1, d//4 -> B * C, M, d//4
-            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//4 -> C, 1, d//4 -> B * C, M, d//4
+            # self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//4 -> 1, M, d//4 -> B * C, M, d//4
+            # self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//4 -> 1, M, d//4 -> B * C, M, d//4
+            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B*C, 1, 1), # M, d//2 -> 1, M, d//2 -> B * C, M, d//2
+            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # C, d//2 -> C, 1, d//2 -> B * C, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d 
 
         dec_out = self.rnn_dec(dec_in, enc_out)[0]  # B * C * M, 1, d
@@ -1000,19 +977,17 @@ class CustomEmbedingSegRNN(nn.Module):
         yd = self.dropout(dec_out)
         yw = self.linear_patch_re(yd)  # B * C * M, 1, d -> B * C * M, 1, W
         y = yw.reshape(B, C, -1).permute(0, 2, 1) # B, C, H -> B, H, C
-        y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
-        y = self.relu(y)
 
-        # y = y + seq_last
+        if self.output_channel == 'single':
+            y = self.linear_patch_dr(y).squeeze(2) # B, H, C -> B, H, 1 -> B, H
+    
+        y = self.relu(y)
 
         return y           
     
 class CNNSegRNN(nn.Module):
     def __init__(self, configs):
         super(CNNSegRNN, self).__init__()
-
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
 
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
@@ -1091,8 +1066,7 @@ class CNNSegRNN(nn.Module):
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
+
         try:
           B, L, C = x.shape
         except:
@@ -1147,9 +1121,6 @@ class CustomEmbedingCNNSegRNN(nn.Module):
     def __init__(self, configs):
         super(CustomEmbedingCNNSegRNN, self).__init__()
 
-        # remove this, the performance will be bad
-        # self.lucky = nn.Embedding(configs.enc_in, configs.d_model // 2)
-
         self.seq_len = configs['seq_len']
         self.pred_len = configs['pred_len']
         self.week_t = configs['week_t']
@@ -1220,17 +1191,16 @@ class CustomEmbedingCNNSegRNN(nn.Module):
             batch_first=True
             )
 
-        self.hour_emb = nn.Parameter(torch.randn(24, self.d_model // 4))
-        self.day_emb = nn.Parameter(torch.randn(7, self.d_model // 4))
-        self.month_emb = nn.Parameter(torch.randn(12, self.d_model // 4))
-        self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 4))  
+        # self.hour_emb = nn.Parameter(torch.randn(24 * (self.pred_len // self.patch_len), self.d_model // 4))
+        # self.day_emb = nn.Parameter(torch.randn(7 * (self.pred_len // self.patch_len), self.d_model // 4))
+        self.month_emb = nn.Parameter(torch.randn(12 * (self.pred_len // self.patch_len), self.d_model // 2))
+        self.channel_emb = nn.Parameter(torch.randn(1, self.d_model // 2))  
 
         self.dropout = nn.Dropout(configs['dropout'])
         self.linear_patch_re = nn.Linear(self.d_model, self.patch_len)
 
     def forward(self, x, x_mark, y_mark):
-        # seq_last = x[:, -1:, :].detach()
-        # x = x - seq_last
+
         try:
           B, L, C = x.shape
         except:
@@ -1266,10 +1236,10 @@ class CustomEmbedingCNNSegRNN(nn.Module):
 
         #### DECONDING ####
         dec_in = torch.cat([
-            self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B, M, 1), # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
-            self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B, M, 1), # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
-            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B, M, 1), # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
-            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # 1, d//4 -> 1, 1, d//4 -> B, M, d//4
+            # self.hour_emb[(y_mark[..., 3][-1] * 24).type(torch.LongTensor)].unsqueeze(0).repeat(B, 1, 1), # M, d//4 -> 1, M, d//4 -> B, M, d//4
+            # self.day_emb[(y_mark[..., 2][-1] * 7).type(torch.LongTensor)].unsqueeze(0).repeat(B, 1, 1), # M, d//4 -> 1, M, d//4 -> B, M, d//4
+            self.month_emb[(y_mark[..., 1][-1] * 12).type(torch.LongTensor)].unsqueeze(0).repeat(B, 1, 1), # M, d//2 -> 1, M, d//2 -> B, M, d//2
+            self.channel_emb.unsqueeze(1).repeat(B, M, 1) # 1, d//2 -> 1, 1, d//2 -> B, M, d//2
         ], dim=-1).flatten(0, 1).unsqueeze(1) # B * C, M, d -> B * C * M, d -> B * C * M, 1, d 
 
         dec_out = self.rnn_dec(dec_in, enc_out)[0]  # B * M, 1, d
@@ -1278,8 +1248,6 @@ class CustomEmbedingCNNSegRNN(nn.Module):
         yw = self.linear_patch_re(yd)  # B * M, 1, d -> B * M, 1, W
         y = yw.reshape(B, 1, -1).squeeze(1) # B, 1, H -> B, H
         y = self.relu(y)
-
-        # y = y + seq_last
 
         return y
     
@@ -1596,3 +1564,98 @@ class Seq2SeqLSTM(nn.Module):
             x_input = torch.cat((x_input, appending), dim=1) # B, L - W, 1 -> B, L, 1
 
         return outputs
+    
+########################
+## TRANSFORMER MODELS ##
+########################
+    
+class iTransformer(nn.Module):
+
+    def __init__(self, configs, output_channel):
+        super(iTransformer, self).__init__()
+
+        self.output_channel = output_channel
+
+        self.seq_len = configs['seq_len']
+        self.pred_len = configs['pred_len']
+        self.d_model = configs['d_model']
+        self.enc_in = configs['enc_in']
+        self.d_ff = configs['d_ff']
+        self.output_attention = configs['output_attention']
+        self.use_norm = configs['use_norm']
+        self.dropout = configs['dropout']
+        self.n_heads = configs['n_heads']
+        self.e_layers = configs['e_layers']
+
+        # Embedding
+        self.enc_embedding = DataEmbedding_inverted(self.seq_len, self.d_model, 'fixed', 'h',
+                                                    self.dropout)
+        
+        # Encoder-only architecture
+        self.encoder = Encoder(
+            [
+                EncoderLayer(
+                    AttentionLayer(
+                        FullAttention(mask_flag=False, factor=5, attention_dropout=self.dropout,
+                                      output_attention=self.output_attention), self.d_model, self.n_heads),
+                    self.d_model,
+                    self.d_ff,
+                    dropout=self.dropout
+                    # activation=configs.activation # -> activation is relu
+                ) for l in range(self.e_layers)
+            ],
+            norm_layer=torch.nn.LayerNorm(self.d_model)
+        )
+
+        self.projector = nn.Linear(self.d_model, self.pred_len, bias=True)
+        self.linear_patch_dr = nn.Linear(self.enc_in, 1)
+
+        self.relu = nn.ReLU()
+
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        # if self.use_norm:
+        #     # Normalization from Non-stationary Transformer
+        #     means = x_enc.mean(1, keepdim=True).detach()
+        #     x_enc = x_enc - means
+        #     stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
+        #     x_enc /= stdev
+
+        _, _, N = x_enc.shape # B L N
+        # B: batch_size;    E: d_model; 
+        # L: seq_len;       S: pred_len;
+        # N: number of variate (tokens), can also includes covariates
+
+        # Embedding
+        # B L N -> B N E                (B L N -> B L E in the vanilla Transformer)
+        enc_out = self.enc_embedding(x_enc, x_mark_enc) # covariates (e.g timestamp) can be also embedded as tokens
+        
+        # B N E -> B N E                (B L E -> B L E in the vanilla Transformer)
+        # the dimensions of embedded time series has been inverted, and then processed by native attn, layernorm and ffn modules
+        enc_out, attns = self.encoder(enc_out, attn_mask=None)
+
+        # B N E -> B N S -> B S N 
+        dec_out = self.projector(enc_out).permute(0, 2, 1)[:, :, :N] # filter the covariates
+
+        if self.output_channel == 'single':
+            # B S N -> B S 1 -> B S
+            dec_out = self.linear_patch_dr(dec_out)
+       
+        dec_out = self.relu(dec_out)
+
+        # if self.use_norm:
+        #     # De-Normalization from Non-stationary Transformer
+        #     dec_out = dec_out * (stdev[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+        #     dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
+
+        return dec_out
+
+
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+
+        dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+        dec_out = dec_out[:, -self.pred_len:, :]
+        
+        if self.output_channel == 'single':
+            dec_out = dec_out.squeeze(2)
+
+        return dec_out  # [B, L, D]
