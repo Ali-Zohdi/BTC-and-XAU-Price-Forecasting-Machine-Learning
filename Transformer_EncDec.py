@@ -310,12 +310,25 @@ class Flatten_Head_For_Single_Output(nn.Module):
             self.linear = nn.Linear(nf * n_vars, target_window) 
             self.dropout = nn.Dropout(head_dropout)
             
+    # def forward(self, x):                                 # x: [bs x nvars x d_model x patch_num]
+    #     x = self.flatten(x)                               # x: [bs x nvars * d_model * patch_num]
+    #     x = self.linear(x)                                # x: [bs x target_window]
+    #     x = self.dropout(x)
+    #     return x
     def forward(self, x):                                 # x: [bs x nvars x d_model x patch_num]
-        x = self.flatten(x)                               # x: [bs x nvars * d_model * patch_num]
-        x = self.linear(x)                                # x: [bs x target_window]
-        x = self.dropout(x)
-        return x
-        
+        if self.individual:
+            x_out = []
+            for i in range(self.n_vars):
+                z = self.flattens[i](x[:,i,:,:])          # z: [bs x d_model * patch_num]
+                z = self.linears[i](z)                    # z: [bs x target_window]
+                z = self.dropouts[i](z)
+                x_out.append(z)
+            x = torch.stack(x_out, dim=1)                 # x: [bs x nvars x target_window]
+        else:
+            x = self.flatten(x)
+            x = self.linear(x)
+            x = self.dropout(x)
+        return x        
         
     
     
