@@ -1731,7 +1731,7 @@ class PatchTST(nn.Module):
                                   subtract_last=subtract_last, verbose=verbose, **kwargs)
     
     
-    def forward(self, x):           # x: [Batch, Input length, Channel]
+    def forward(self, x, x_mark_enc, x_dec, x_mark_dec, mask=None):           # x: [Batch, Input length, Channel]
         if self.decomposition:
             res_init, trend_init = self.decomp_module(x)
             res_init, trend_init = res_init.permute(0,2,1), trend_init.permute(0,2,1)  # x: [Batch, Channel, Input length]
@@ -1747,32 +1747,36 @@ class PatchTST(nn.Module):
                 x = x.permute(0,2,1)    # x: [Batch, Input length, Channel]
         return x
     
-configs = {
-    'enc_in' : 4,
-    'seq_len' : 168,
-    'pred_len' : 24,
-    'e_layers' : 1,
-    'n_heads' : 4,
-    'd_model' : 256,
-    'd_ff' : 1024,
-    'dropout' : 0.5,
-    'fc_dropout' : 0.2,
-    'head_dropout' : 0.1,
-    'individual' : True,
-    'patch_len' : 6,
-    'stride' : 6,
-    'padding_patch' : 'no', # its default value is 'end' and it generates ReplicationPad1d padding
-    'affine' : False, # used for RevIN normalization which is eliminated
-    'subtract_last' : False, # used for RevIN normalization which is eliminated 
-    'decomposition' : True,
-    'kernel_size' : 3 # time series decomposition kernel
+# X_sample, X_mark_sample, y_sample, y_mark_sample = next(iter(train_loader))
 
-}
+# configs = {
 
-inputs = torch.randn((2000, 168, 4))
+#             'seq_len' : X_sample.size()[-2],
+#            'pred_len' : y_sample.size()[1],
+#              'week_t' : X_sample.size()[1],
+#              'enc_in' : X_sample.size()[-1],
 
-model = PatchTST(configs=configs, output_channel='single')
+#           'patch_len' : 6, # Set 6 for daily, and 24 for weekly
+#             'd_model' : 512,
+#         'out_channel' : 1024, # CNN out channel
+#          'cnn_kernel' : 3,
+#        'pooling_size' : 3,
+#             'dropout' : 0.5,
+#                'conv' : 2 if len(X_sample.size()) == 4 else 1,
 
-outputs = model(inputs)
-
-print(outputs.shape)
+#            'e_layers' : 4,
+#             'n_heads' : 4,
+#                'd_ff' : 2048,
+#            'use_norm' : False,
+#    'output_attention' : False,
+            
+#          'fc_dropout' : 0.2,
+#        'head_dropout' : 0.1,
+#          'individual' : True, # Consider Flatten layers for each feature in PatchTST, it does not matter if output_channel == 'single
+#              'stride' : 6, # Stride of the patching layer in PatchTST
+#       'padding_patch' : 'no', # its default value is 'end' and it generates ReplicationPad1d padding
+#              'affine' : False, # used for RevIN normalization which is eliminated
+#       'subtract_last' : False, # used for RevIN normalization which is eliminated 
+#       'decomposition' : True,
+#         'kernel_size' : 3 # time series decomposition kernel
+# }
